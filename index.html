@@ -15,7 +15,22 @@
 }
 html,body{height:100%;overflow:hidden;}
 body{background:var(--bg0);color:var(--txt1);font-family:'Segoe UI',Tahoma,Arial,sans-serif;font-size:12px;display:flex;flex-direction:column;}
+html,
+body {
+  width: 100%;
+  height: 100vh;
+}
 
+.main {
+  height: calc(100vh - 52px);
+}
+
+svg,
+canvas {
+  width: 100% !important;
+  height: 100% !important;
+  display: block;
+}
 /* ── HEADER ── */
 .hdr{display:flex;align-items:stretch;height:78px;flex-shrink:0;background:var(--bg1);border-bottom:1px solid var(--bdr);}
 .logo-box{width:48px;flex-shrink:0;background:var(--red1);display:flex;align-items:center;justify-content:center;overflow:hidden;}
@@ -624,12 +639,31 @@ function redraw(){
 }
 
 /* Build globe after DOM ready */
-window.addEventListener('load',()=>{
-  buildGlobe();
-  window.addEventListener('resize',()=>{
-    if(rafId) cancelAnimationFrame(rafId);
+window.addEventListener("load", () => {
+
+  setTimeout(() => {
+
     buildGlobe();
-  });
+
+    // force proper layout calculation
+    window.dispatchEvent(new Event("resize"));
+
+  }, 500);
+
+});
+
+window.addEventListener("resize", () => {
+
+  clearTimeout(window.__resizeTimer);
+
+  window.__resizeTimer = setTimeout(() => {
+
+    if (rafId) cancelAnimationFrame(rafId);
+
+    buildGlobe();
+
+  }, 300);
+
 });
 
 </script>
