@@ -1,0 +1,1249 @@
+<!--
+=============================================================================
+CHANGELOG
+=============================================================================
+File modified: gbd2019_deaths_dashboard.html
+Date: 2026-05-14
+
+Libraries added via CDN:
+  - CountUp.js 2.0.7:
+    https://cdnjs.cloudflare.com/ajax/libs/countup.js/2.0.7/countUp.min.js
+  (D3 v7 and topojson-client were already present)
+
+New CSS variables added (Accessible Orchid theme):
+  --bg, --fg, --accent, --neutral1, --neutral2, --neutral3
+  --red-min, --red-mid, --red-max
+  --supp-red-1..5, --flag-row-size, --flag-row-height, --flag-strip-size
+  --title-size, --kpi-large, --easing-soft, --card-radius, --card-shadow
+
+New JS functions added:
+  animateKPI(elSelector, endValue, duration, formatFn)   ← tweak duration arg
+  showTooltip(html, x, y)    ← uses #tooltip
+  hideTooltip()
+  switchTab(newTabId)         ← 220ms fade; tweak in switchTab()
+  focusCountry(iso)           ← 900ms zoom, 600ms halo; tweak in focusCountry()
+  initFlagStrip()             ← 40ms stagger; tweak delay in initFlagStrip()
+
+D3 bar update pattern:
+  renderContinentBars()  → 700ms d3.easeCubic transitions
+  renderTop5Countries()  → 700ms d3.easeCubic
+  renderTop5Causes()     → 700ms d3.easeCubic
+
+Line draw animation: showTrendPanel() → 900ms d3.easeLinear stroke-dashoffset
+
+Globe: hover highlight 220ms opacity; click zoom 900ms; pulsing halo 600ms loop
+
+IDs added/targeted:
+  #left-panel, #title-annual-deaths, #continent-selector, #summary-box,
+  #bar-continent, #bar-top5-countries, #bar-top5-causes,
+  #globe-container, #globe-kpi, #right-panel, #right-tabs,
+  #country-table, #flag-strip, #country-trend-popup, #tooltip
+=============================================================================
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Annual Number of Deaths | Cause — GBD 2019</title>
+<!-- CountUp.js for KPI animations (added per spec) -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/countup.js/2.0.7/countUp.min.js"></script>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+
+/* ── ACCESSIBLE ORCHID THEME VARIABLES (spec exact) ── */
+:root{
+  --bg: #FFFFFF;
+  --fg: #192229;
+  --accent: #BD3978;
+  --neutral1: #C480A7;
+  --neutral2: #6E98B5;
+  --neutral3: #663466;
+  --red-min: #F39CBC;
+  --red-mid: #F1527A;
+  --red-max: #F40000;
+  --supp-red-1: #a80000;
+  --supp-red-2: #b13719;
+  --supp-red-3: #c0433a;
+  --supp-red-4: #a4262c;
+  --supp-red-5: #ea433b;
+  --flag-row-size: 18px;
+  --flag-row-height: 12px;
+  --flag-strip-size: 24px;
+  --title-size: 20px;
+  --kpi-large: 44px;
+  --easing-soft: cubic-bezier(0.22,0.9,0.36,1);
+  --card-radius: 6px;
+  --card-shadow: 0 6px 18px rgba(25,34,41,0.06);
+
+  /* Dark-theme palette used in rendering (matches screenshot) */
+  --body-bg:#0A1720; --panel-bg:#0D1E2C; --panel-bg2:#142434;
+  --text:#FFFFFF; --muted:#7FA0B5; --muted2:#5B7A8E;
+  --border:#1C3347; --border2:#233D52;
+  --red:#E63946; --red2:var(--red-mid); --red3:var(--red-min); --red4:var(--accent);
+}
+
+html,body{height:100%;overflow:hidden;will-change:transform}
+body{background:var(--body-bg);color:var(--text);font-family:'Segoe UI','Helvetica Neue',Arial,sans-serif;font-size:13px;display:flex;flex-direction:column;min-height:0}
+
+/* ── HEADER ── */
+.hdr{display:flex;height:52px;border-bottom:1px solid var(--border);flex-shrink:0;overflow:hidden}
+.logo{background:#C41E3A;width:50px;flex-shrink:0;display:flex;flex-direction:column;align-items:center;justify-content:center}
+.logo-t{font-size:15px;font-weight:900;color:#fff;letter-spacing:1.5px;line-height:1}
+.logo-s{font-size:6.5px;color:rgba(255,255,255,.65);letter-spacing:.5px;text-align:center;line-height:1.3;margin-top:1px}
+.title-blk{padding:7px 14px;border-right:1px solid var(--border);flex-shrink:0;width:252px;display:flex;flex-direction:column;justify-content:center}
+/* #title-annual-deaths — tweak font-size via --title-size */
+#title-annual-deaths{font-size:var(--title-size);font-weight:700;line-height:1.15;color:var(--text)}
+.t-sub{font-size:10px;color:var(--muted);margin-top:3px}
+.ticker-out{flex:1;overflow:hidden;display:flex;align-items:center;padding:0 14px;background:linear-gradient(90deg,rgba(10,23,32,.9),transparent 5%,transparent 95%,rgba(10,23,32,.9))}
+.ticker-in{display:flex;gap:28px;animation:tick 45s linear infinite;white-space:nowrap}
+.ti{display:flex;align-items:center;gap:5px;font-size:11px}
+.ti-n{font-size:10px;color:var(--muted2)}
+.ti-nm{color:var(--text)}
+.ti-v{color:var(--red2)}
+@keyframes tick{0%{transform:translateX(0)}100%{transform:translateX(-50%)}}
+
+/* ── MAIN GRID ── */
+.main{display:grid;grid-template-columns:252px 1fr 370px;flex:1;overflow:hidden;min-height:0}
+
+/* ── LEFT PANEL ── */
+#left-panel{background:var(--panel-bg);border-right:1px solid var(--border);overflow-y:auto;padding:10px 10px 14px;display:flex;flex-direction:column;gap:10px}
+.sec-t{font-size:9.5px;font-weight:700;color:var(--muted2);text-transform:uppercase;letter-spacing:.7px;margin-bottom:5px}
+/* #continent-selector */
+#continent-selector{display:flex;flex-direction:column;gap:2px}
+.chk-item{display:flex;align-items:center;gap:7px;font-size:12px;cursor:pointer;padding:2px 4px;border-radius:3px;user-select:none;transition:background .15s}
+.chk-item:hover{background:rgba(255,255,255,.05)}
+.chk-item input{accent-color:var(--red-max);cursor:pointer;width:12px;height:12px;flex-shrink:0}
+/* #summary-box */
+#summary-box{background:rgba(0,0,0,.3);border:1px solid var(--border);border-radius:var(--card-radius);padding:9px 10px;font-size:11.5px;line-height:1.78;color:var(--text);box-shadow:var(--card-shadow)}
+.r{color:var(--red-mid);font-weight:600}
+/* #bar-continent */
+#bar-continent{display:flex;flex-direction:column;gap:4px}
+.cb-item{cursor:pointer}
+.cb-label{font-size:11px;color:var(--text);margin-bottom:2px}
+.cb-track{height:19px;background:rgba(255,255,255,.05);border-radius:2px;overflow:hidden;position:relative}
+/* bar fill uses SVG via D3 — inline style width transitions handled in JS */
+.cb-fill{height:100%;display:flex;align-items:center;padding-right:5px;justify-content:flex-end;border-radius:2px;transition:width .7s var(--easing-soft),opacity .5s}
+.cb-ft{font-size:9px;color:#fff;font-weight:700;white-space:nowrap;text-shadow:0 0 4px rgba(0,0,0,.5)}
+
+/* #bar-top5-countries — vertical mini bar chart (SVG-powered) */
+#bar-top5-countries{width:100%;overflow:hidden}
+.mini-bars-wrap{display:flex;align-items:flex-end;gap:4px;height:80px;padding-top:6px}
+.mb-col{display:flex;flex-direction:column;align-items:center;flex:1;gap:2px}
+/* bar rect transition handled by D3 */
+.mb-bar{border-radius:2px 2px 0 0;width:100%;display:flex;align-items:flex-start;justify-content:center;padding-top:2px;min-height:4px}
+.mb-v{font-size:8.5px;color:#fff;font-weight:700}
+.mb-n{font-size:8px;color:var(--muted);text-align:center;line-height:1.2;overflow:hidden;max-width:42px}
+
+/* #bar-top5-causes — horizontal mini bars in left panel */
+#bar-top5-causes{display:flex;flex-direction:column;gap:3px}
+.bc-item{display:flex;align-items:center;gap:5px;cursor:default}
+.bc-name{font-size:10px;color:var(--muted);width:76px;flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.bc-track{flex:1;height:12px;background:rgba(255,255,255,.05);border-radius:2px;overflow:hidden;position:relative}
+.bc-fill{height:100%;border-radius:2px;transition:width .7s var(--easing-soft)}
+.bc-val{font-size:9px;color:var(--red2);width:36px;text-align:right;flex-shrink:0}
+
+/* ── CENTER PANEL / GLOBE ── */
+#globe-container{background:#060E17;display:flex;flex-direction:column;overflow:hidden;position:relative}
+.globe-wrap{flex:1;position:relative;display:flex;align-items:center;justify-content:center;overflow:hidden;min-height:0}
+#globe-svg{cursor:grab;display:block;will-change:transform}
+#globe-svg:active{cursor:grabbing}
+
+/* #globe-kpi — KPI overlay card (top-right of globe) */
+#globe-kpi{
+  position:absolute;top:10px;right:14px;text-align:right;pointer-events:none;z-index:5;
+  background:rgba(6,14,23,.6);border-radius:var(--card-radius);padding:6px 10px;
+  box-shadow:var(--card-shadow);
+  will-change:opacity;
+}
+.kpi-title{font-size:11.5px;font-weight:700;color:var(--text)}
+.kpi-secondary{font-size:10px;color:var(--muted);margin-top:1px}
+/* .kpi-total — big animated number; tweak --kpi-large for size */
+.kpi-total{
+  font-size:var(--kpi-large);font-weight:800;color:rgba(255,255,255,.9);
+  text-shadow:0 2px 24px rgba(0,0,0,.9);line-height:1.05;margin-top:4px;
+  display:block;will-change:opacity;
+}
+.globe-legend{position:absolute;bottom:10px;right:12px;z-index:5;display:flex;flex-direction:column;gap:3px}
+.gl-row{display:flex;align-items:center;gap:5px;font-size:9px;color:var(--muted)}
+.gl-sw{width:30px;height:10px;border-radius:1px}
+.globe-note{position:absolute;bottom:10px;left:10px;font-size:9px;color:rgba(255,255,255,.3);z-index:5}
+
+/* Globe hover highlight overlay path */
+.country-highlight{pointer-events:none;opacity:0;will-change:opacity;transition:opacity 220ms var(--easing-soft)}
+.country-highlight.show{opacity:.85}
+
+/* Halo pulse animation — keyframes */
+@keyframes halo-pulse{
+  0%,100%{transform:scale(1);opacity:.6}
+  50%{transform:scale(1.12);opacity:.2}
+}
+.halo-pulse{animation:halo-pulse 600ms ease-in-out 2}
+
+/* ── TOOLTIP (spec exact CSS) ── */
+/* Tweak: background, font-size, padding, border-radius all here */
+#tooltip{
+  position:absolute;
+  pointer-events:none;
+  opacity:0;
+  transform:translateY(6px);
+  transition:opacity 160ms var(--easing-soft),transform 160ms var(--easing-soft);
+  background:rgba(25,34,41,.95);
+  color:#fff;
+  padding:8px 10px;
+  border-radius:var(--card-radius);
+  font-size:12px;
+  z-index:30;
+  min-width:140px;
+  max-width:210px;
+}
+#tooltip.show{opacity:1;transform:translateY(0)}
+.tt-nm{font-weight:700;color:var(--text);margin-bottom:3px}
+.tt-row{display:flex;justify-content:space-between;gap:10px;color:var(--muted);font-size:10.5px}
+.tt-row span:last-child{color:var(--red2);font-weight:600}
+
+/* ── CAUSE TABLE (center bottom) ── */
+.cause-sec{border-top:1px solid var(--border);padding:8px 12px 6px;flex-shrink:0;background:#070F18;max-height:180px;overflow:hidden}
+.ctbl{width:100%;border-collapse:collapse;font-size:11px}
+.ctbl th{font-size:9px;color:var(--muted2);font-weight:600;text-align:left;padding:2px 5px;border-bottom:1px solid var(--border)}
+.ctbl th.r-align{text-align:right}
+.ctbl td{padding:3.5px 5px;vertical-align:middle}
+.ctbl tr:hover td{background:rgba(255,255,255,.03)}
+.c-val{color:var(--red2);font-weight:600;text-align:right;white-space:nowrap}
+.spark{display:flex;align-items:flex-end;gap:1.5px;height:16px;width:80px}
+.spark-b{background:var(--red-max);border-radius:1px;width:4px;min-height:2px}
+
+/* ── RIGHT PANEL ── */
+#right-panel{background:var(--panel-bg);border-left:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden}
+/* #right-tabs */
+#right-tabs{display:flex;border-bottom:1px solid var(--border);flex-shrink:0;padding:0 10px;align-items:center}
+.tab{padding:9px 10px;font-size:11px;cursor:pointer;color:var(--muted);border-bottom:2px solid transparent;background:none;border-top:none;border-left:none;border-right:none;font-family:inherit;white-space:nowrap;
+  /* Tab underline slide: transition border-bottom 260ms */
+  transition:color .22s var(--easing-soft),border-bottom-color .26s var(--easing-soft)}
+.tab.active{color:var(--red-mid);border-bottom-color:var(--red-mid)}
+.tab-icon{margin-left:auto;color:var(--muted);font-size:15px;padding:4px 2px;cursor:pointer;line-height:1;display:flex;align-items:center}
+.tab-content{flex:1;display:flex;flex-direction:column;overflow:hidden;will-change:opacity}
+
+/* Country table tab */
+#worldwide-tab{display:flex;flex-direction:column;overflow:hidden}
+.dc-hdr{display:grid;grid-template-columns:1fr auto;padding:5px 10px;font-size:9.5px;font-weight:700;color:var(--muted2);border-bottom:1px solid var(--border);flex-shrink:0}
+/* #country-table — scrollable country list */
+#country-table{overflow-y:auto;flex:1}
+.dc-row{
+  display:grid;grid-template-columns:auto 1fr auto;align-items:center;gap:6px;
+  padding:4.5px 10px;border-bottom:1px solid rgba(28,51,71,.5);cursor:pointer;
+  transition:background .15s;border-left:2px solid transparent;
+}
+.dc-row:hover{background:rgba(255,255,255,.04)}
+.dc-row.sel{background:rgba(241,82,122,.1);border-left-color:var(--red-mid)}
+.dc-row:focus{outline:2px solid var(--red-mid);outline-offset:-2px}
+/* Inline flag: --flag-row-size × --flag-row-height */
+.dc-flag{
+  font-size:13.5px;line-height:1;
+  width:var(--flag-row-size);height:var(--flag-row-height);
+  display:flex;align-items:center;justify-content:center;overflow:hidden;flex-shrink:0;
+}
+.dc-name{font-size:11px;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dc-right{display:flex;align-items:center;gap:5px;justify-content:flex-end;flex-shrink:0;min-width:130px}
+/* Mini red gradient bar inside Deaths cell */
+.dc-bar-w{width:50px;display:flex;justify-content:flex-end;align-items:center}
+.dc-bar{height:10px;border-radius:2px;min-width:1px;background:linear-gradient(90deg,var(--red-min),var(--red-max))}
+.dc-val{font-size:10px;color:var(--muted);min-width:80px;text-align:right;white-space:nowrap}
+
+/* Cause-by-country tab */
+#cause-tab{padding:10px;overflow-y:auto;flex:1;display:none}
+#cause-tab.active{display:block}
+.cbt-hdr{font-size:11px;color:var(--muted);margin-bottom:8px;font-style:italic}
+.cbt-country{font-size:13px;font-weight:700;color:var(--text);margin-bottom:10px}
+.cbt-row{display:grid;grid-template-columns:1fr 56px 80px;gap:6px;align-items:center;padding:4px 0;border-bottom:1px solid rgba(28,51,71,.4)}
+.cbt-name{font-size:11px;color:var(--text)}
+.cbt-val{font-size:11px;color:var(--red2);font-weight:600;text-align:right}
+.cbt-bar-w{display:flex;align-items:center;height:8px}
+.cbt-bar{height:8px;border-radius:2px;min-width:1px;background:linear-gradient(90deg,var(--red-min),var(--red-max));transition:width .7s var(--easing-soft)}
+
+/* ── FLAG STRIP (far right, vertical) ── */
+/* Slide in from translateX(12px) → 0 with 40ms stagger per flag */
+#flag-strip{
+  width:28px;flex-shrink:0;border-left:1px solid var(--border);
+  overflow-y:auto;display:flex;flex-direction:column;align-items:center;
+  padding:4px 2px;gap:2px;background:var(--panel-bg);
+}
+#flag-strip::-webkit-scrollbar{display:none}
+.fs-flag{
+  font-size:11px;line-height:1;
+  width:var(--flag-strip-size);height:16px;
+  display:flex;align-items:center;justify-content:center;
+  border-radius:2px;cursor:pointer;
+  transition:background .15s;
+  transform:translateX(12px);opacity:0;
+  will-change:transform,opacity;
+}
+.fs-flag.animated{transition:transform .3s var(--easing-soft),opacity .3s var(--easing-soft),background .15s}
+.fs-flag.visible{transform:translateX(0);opacity:1}
+.fs-flag:hover{background:rgba(255,255,255,.08)}
+.fs-flag.sel{background:rgba(241,82,122,.2)}
+
+/* Right panel inner layout (country-table + flag-strip side by side) */
+.rp-body{display:flex;flex:1;overflow:hidden;min-height:0}
+
+/* ── TREND POPUP ── */
+/* #country-trend-popup — slide in from translateX(20px) */
+#country-trend-popup{
+  position:fixed;bottom:0;right:370px;
+  background:rgba(8,20,32,.98);border:1px solid var(--border2);
+  border-bottom:none;border-radius:6px 6px 0 0;padding:10px 12px;
+  z-index:50;width:268px;display:none;
+  box-shadow:0 -4px 20px rgba(0,0,0,.6);
+  transform:translateX(20px);opacity:0;
+  transition:transform .32s var(--easing-soft),opacity .32s var(--easing-soft);
+  will-change:transform,opacity;
+}
+#country-trend-popup.show{display:block}
+#country-trend-popup.visible{transform:translateX(0);opacity:1}
+.tp-close{position:absolute;top:8px;right:10px;cursor:pointer;color:var(--muted);font-size:13px;background:none;border:none;padding:0;font-family:inherit;line-height:1}
+.tp-title{font-size:12px;font-weight:700;color:var(--text);margin-bottom:6px}
+.tp-sub{font-size:10px;color:var(--muted);margin-bottom:6px}
+
+/* ── SCROLLBAR ── */
+::-webkit-scrollbar{width:3px;height:3px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:var(--border2);border-radius:2px}
+::-webkit-scrollbar-thumb:hover{background:var(--muted2)}
+
+/* Performance */
+.cb-fill,.dc-bar,.bc-fill,.cbt-bar,.mb-bar{will-change:width}
+</style>
+</head>
+<body>
+
+<!-- HEADER -->
+<div class="hdr">
+  <div class="logo"><div class="logo-t">FP20</div><div class="logo-s">ANALYTICS</div></div>
+  <div class="title-blk">
+    <!-- #title-annual-deaths — controlled by --title-size CSS var -->
+    <div id="title-annual-deaths">Annual Number of Deaths | Cause</div>
+    <div class="t-sub">Viewing Worldwide Deaths | Year : 1990–2019</div>
+  </div>
+  <div class="ticker-out"><div class="ticker-in" id="ticker"></div></div>
+</div>
+
+<!-- MAIN GRID -->
+<div class="main">
+
+  <!-- ══ LEFT PANEL ══ -->
+  <div id="left-panel">
+
+    <!-- Continent Selector -->
+    <div>
+      <div class="sec-t">Select Continent</div>
+      <!-- #continent-selector — checkboxes; filter all visuals on change -->
+      <div id="continent-selector" role="group" aria-label="Select Continent"></div>
+    </div>
+
+    <!-- Summary Box -->
+    <!-- #summary-box — global totals text with red highlights -->
+    <div id="summary-box" aria-live="polite"></div>
+
+    <!-- Continent Bars -->
+    <div>
+      <div class="sec-t">Deaths | Continent</div>
+      <!-- #bar-continent — D3-animated horizontal bars; 700ms cubic -->
+      <div id="bar-continent"></div>
+    </div>
+
+    <!-- Top 5 Countries -->
+    <div>
+      <div class="sec-t">Avg. Deaths | Countries [Top5]</div>
+      <!-- #bar-top5-countries — vertical column chart; D3 animated -->
+      <div id="bar-top5-countries"><div class="mini-bars-wrap" id="mini-bars"></div></div>
+    </div>
+
+    <!-- Top 5 Causes (left panel horizontal bars) -->
+    <div>
+      <div class="sec-t">Avg. Deaths | Cause [Top5]</div>
+      <!-- #bar-top5-causes — horizontal mini bars; 700ms cubic -->
+      <div id="bar-top5-causes"></div>
+    </div>
+
+  </div><!-- /left-panel -->
+
+  <!-- ══ CENTER PANEL — GLOBE ══ -->
+  <!-- #globe-container — holds globe + overlays -->
+  <div id="globe-container">
+    <div class="globe-wrap" id="globe-wrap">
+      <svg id="globe-svg"></svg>
+
+      <!-- #globe-kpi — KPI overlay card combining title, subtitle and big number -->
+      <!-- Tweak KPI sizes via .kpi-total { font-size } and --kpi-large -->
+      <div id="globe-kpi" aria-label="Worldwide death statistics">
+        <div class="kpi-title">Worldwide Deaths</div>
+        <div class="kpi-secondary" id="kpi-secondary">Yearly Avg. Death | 48.9M</div>
+        <!-- .kpi-total animated via animateKPI(); tweak duration in initKPI() call -->
+        <span class="kpi-total" id="kpi-total" data-current="0">1.47bn</span>
+      </div>
+
+      <!-- Legend -->
+      <div class="globe-legend" aria-hidden="true">
+        <div class="gl-row"><div class="gl-sw" style="background:var(--red-max)"></div>&gt;30M &amp; Above</div>
+        <div class="gl-row"><div class="gl-sw" style="background:var(--red-mid)"></div>&gt;5M to &lt;30M</div>
+        <div class="gl-row"><div class="gl-sw" style="background:var(--red-min)"></div>&lt;5M</div>
+      </div>
+      <div class="globe-note">Note – Hover to view details</div>
+
+      <!-- #tooltip — fade in/out 160ms; spec exact CSS above -->
+      <div id="tooltip" role="tooltip">
+        <div class="tt-nm" id="tt-nm"></div>
+        <div class="tt-row"><span>Total Deaths</span><span id="tt-total"></span></div>
+        <div class="tt-row"><span>Yearly Avg.</span><span id="tt-avg"></span></div>
+        <div class="tt-row"><span>Share</span><span id="tt-pct"></span></div>
+      </div>
+    </div><!-- /globe-wrap -->
+
+    <!-- Cause table in center bottom -->
+    <div class="cause-sec">
+      <div class="sec-t" style="margin-bottom:5px">Avg. Deaths | Cause [Top5]</div>
+      <table class="ctbl">
+        <thead>
+          <tr>
+            <th>Death Cause</th>
+            <th class="r-align">Avg. Deaths</th>
+            <th style="text-align:center">Trend</th>
+          </tr>
+        </thead>
+        <tbody id="cause-tbody"></tbody>
+      </table>
+    </div>
+  </div><!-- /globe-container -->
+
+  <!-- ══ RIGHT PANEL ══ -->
+  <div id="right-panel">
+    <!-- #right-tabs — fade in/out 220ms; underline slide 260ms -->
+    <div id="right-tabs" role="tablist" aria-label="Death statistics views">
+      <button class="tab active" id="tab-ww" role="tab" aria-selected="true"
+              aria-controls="worldwide-tab" onclick="switchTab('worldwide-tab')">Worldwide Death</button>
+      <button class="tab" id="tab-cc" role="tab" aria-selected="false"
+              aria-controls="cause-tab" onclick="switchTab('cause-tab')">Death Cause | Country</button>
+      <div class="tab-icon" onclick="resetFilters()" title="Reset filters" aria-label="Reset filters">↺</div>
+    </div>
+
+    <!-- Tab body with country table + flag strip -->
+    <div class="rp-body">
+      <div style="flex:1;display:flex;flex-direction:column;overflow:hidden;min-height:0">
+
+        <!-- Worldwide Deaths Tab -->
+        <!-- tab-content fade: opacity 0→1 in 220ms -->
+        <div class="tab-content active" id="worldwide-tab" role="tabpanel" aria-labelledby="tab-ww">
+          <div class="dc-hdr"><span>Deaths | Countries</span><span>Deaths</span></div>
+          <!-- #country-table — sorted by death_count desc; inline flags 18×12 + mini bar + % -->
+          <div id="country-table" role="list" aria-label="Countries by deaths"></div>
+        </div>
+
+        <!-- Death Cause | Country Tab -->
+        <div class="tab-content" id="cause-tab" role="tabpanel" aria-labelledby="tab-cc" style="display:none;opacity:0">
+          <div class="cbt-hdr" id="cbt-hdr">Click any country to see death cause breakdown</div>
+          <div id="cbt-country" style="overflow-y:auto;flex:1;padding:6px 10px"></div>
+        </div>
+      </div>
+
+      <!-- #flag-strip — vertical flag strip; 24×16px flags; 40ms stagger slide-in -->
+      <div id="flag-strip" aria-label="Country flags" aria-hidden="true"></div>
+    </div>
+  </div><!-- /right-panel -->
+
+</div><!-- /main -->
+
+<!-- #country-trend-popup — slide in translateX(20px)→0 and opacity 0→1 over 320ms -->
+<div id="country-trend-popup" role="dialog" aria-modal="false" aria-label="Country death trend">
+  <button class="tp-close" onclick="closeTrend()" aria-label="Close trend panel">✕</button>
+  <div class="tp-title" id="tp-title"></div>
+  <div class="tp-sub" id="tp-sub">Yearly deaths 1990–2019 (M)</div>
+  <svg id="tp-svg" width="244" height="76" style="overflow:visible"></svg>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.8.5/d3.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/topojson/3.0.2/topojson.min.js"></script>
+<script>
+/* ═══════════════════════════════════ DATA ═══════════════════════════════════ */
+const CD = {
+  156:{name:"China",flag:"🇨🇳",cont:"Asia",total:265.41,pct:18.10,avg:8.85},
+  356:{name:"India",flag:"🇮🇳",cont:"Asia",total:238.16,pct:16.24,avg:7.94},
+  840:{name:"United States of America",flag:"🇺🇸",cont:"North America",total:71.20,pct:4.86,avg:2.37},
+  643:{name:"Russia",flag:"🇷🇺",cont:"Europe",total:59.59,pct:4.06,avg:1.99},
+  360:{name:"Indonesia",flag:"🇮🇩",cont:"Asia",total:44.05,pct:3.00,avg:1.47},
+  566:{name:"Nigeria",flag:"🇳🇬",cont:"Africa",total:43.67,pct:2.98,avg:1.46},
+  586:{name:"Pakistan",flag:"🇵🇰",cont:"Asia",total:38.15,pct:2.60,avg:1.27},
+  76:{name:"Brazil",flag:"🇧🇷",cont:"South America",total:32.67,pct:2.23,avg:1.09},
+  392:{name:"Japan",flag:"🇯🇵",cont:"Asia",total:31.92,pct:2.18,avg:1.06},
+  276:{name:"Germany",flag:"🇩🇪",cont:"Europe",total:25.56,pct:1.74,avg:0.85},
+  50:{name:"Bangladesh",flag:"🇧🇩",cont:"Asia",total:24.80,pct:1.69,avg:0.83},
+  804:{name:"Ukraine",flag:"🇺🇦",cont:"Europe",total:21.25,pct:1.45,avg:0.71},
+  231:{name:"Ethiopia",flag:"🇪🇹",cont:"Africa",total:20.88,pct:1.42,avg:0.70},
+  180:{name:"Democratic Republic of the Congo",flag:"🇨🇩",cont:"Africa",total:17.45,pct:1.19,avg:0.58},
+  826:{name:"United Kingdom",flag:"🇬🇧",cont:"Europe",total:17.28,pct:1.18,avg:0.58},
+  380:{name:"Italy",flag:"🇮🇹",cont:"Europe",total:16.78,pct:1.14,avg:0.56},
+  710:{name:"South Africa",flag:"🇿🇦",cont:"Africa",total:15.81,pct:1.08,avg:0.53},
+  484:{name:"Mexico",flag:"🇲🇽",cont:"North America",total:15.72,pct:1.07,avg:0.52},
+  250:{name:"France",flag:"🇫🇷",cont:"Europe",total:15.09,pct:1.03,avg:0.50},
+  818:{name:"Egypt",flag:"🇪🇬",cont:"Africa",total:14.88,pct:1.01,avg:0.50},
+  704:{name:"Vietnam",flag:"🇻🇳",cont:"Asia",total:14.44,pct:0.99,avg:0.48},
+  608:{name:"Philippines",flag:"🇵🇭",cont:"Asia",total:13.68,pct:0.93,avg:0.46},
+  104:{name:"Myanmar",flag:"🇲🇲",cont:"Asia",total:13.49,pct:0.92,avg:0.45},
+  764:{name:"Thailand",flag:"🇹🇭",cont:"Asia",total:11.36,pct:0.77,avg:0.38},
+  834:{name:"Tanzania",flag:"🇹🇿",cont:"Africa",total:11.20,pct:0.76,avg:0.37},
+  616:{name:"Poland",flag:"🇵🇱",cont:"Europe",total:11.17,pct:0.76,avg:0.37},
+  724:{name:"Spain",flag:"🇪🇸",cont:"Europe",total:10.89,pct:0.74,avg:0.36},
+  792:{name:"Turkey",flag:"🇹🇷",cont:"Asia",total:10.75,pct:0.73,avg:0.36},
+  364:{name:"Iran",flag:"🇮🇷",cont:"Asia",total:9.28,pct:0.63,avg:0.31},
+  800:{name:"Uganda",flag:"🇺🇬",cont:"Africa",total:8.58,pct:0.58,avg:0.29},
+  410:{name:"South Korea",flag:"🇰🇷",cont:"Asia",total:8.50,pct:0.58,avg:0.28},
+  404:{name:"Kenya",flag:"🇰🇪",cont:"Africa",total:8.61,pct:0.59,avg:0.29},
+  4:{name:"Afghanistan",flag:"🇦🇫",cont:"Asia",total:7.89,pct:0.54,avg:0.26},
+  12:{name:"Algeria",flag:"🇩🇿",cont:"Africa",total:5.83,pct:0.40,avg:0.19},
+  24:{name:"Angola",flag:"🇦🇴",cont:"Africa",total:7.12,pct:0.49,avg:0.24},
+  36:{name:"Australia",flag:"🇦🇺",cont:"Oceania",total:4.32,pct:0.29,avg:0.14},
+  40:{name:"Austria",flag:"🇦🇹",cont:"Europe",total:2.38,pct:0.16,avg:0.08},
+  56:{name:"Belgium",flag:"🇧🇪",cont:"Europe",total:3.03,pct:0.21,avg:0.10},
+  68:{name:"Bolivia",flag:"🇧🇴",cont:"South America",total:2.16,pct:0.15,avg:0.07},
+  120:{name:"Cameroon",flag:"🇨🇲",cont:"Africa",total:5.62,pct:0.38,avg:0.19},
+  124:{name:"Canada",flag:"🇨🇦",cont:"North America",total:6.74,pct:0.46,avg:0.22},
+  152:{name:"Chile",flag:"🇨🇱",cont:"South America",total:2.55,pct:0.17,avg:0.09},
+  170:{name:"Colombia",flag:"🇨🇴",cont:"South America",total:5.83,pct:0.40,avg:0.19},
+  288:{name:"Ghana",flag:"🇬🇭",cont:"Africa",total:5.28,pct:0.36,avg:0.18},
+  300:{name:"Greece",flag:"🇬🇷",cont:"Europe",total:3.25,pct:0.22,avg:0.11},
+  332:{name:"Haiti",flag:"🇭🇹",cont:"North America",total:2.77,pct:0.19,avg:0.09},
+  368:{name:"Iraq",flag:"🇮🇶",cont:"Asia",total:4.52,pct:0.31,avg:0.15},
+  408:{name:"North Korea",flag:"🇰🇵",cont:"Asia",total:5.87,pct:0.40,avg:0.20},
+  450:{name:"Madagascar",flag:"🇲🇬",cont:"Africa",total:3.43,pct:0.23,avg:0.11},
+  458:{name:"Malaysia",flag:"🇲🇾",cont:"Asia",total:3.69,pct:0.25,avg:0.12},
+  466:{name:"Mali",flag:"🇲🇱",cont:"Africa",total:4.17,pct:0.28,avg:0.14},
+  504:{name:"Morocco",flag:"🇲🇦",cont:"Africa",total:5.12,pct:0.35,avg:0.17},
+  508:{name:"Mozambique",flag:"🇲🇿",cont:"Africa",total:5.95,pct:0.41,avg:0.20},
+  524:{name:"Nepal",flag:"🇳🇵",cont:"Asia",total:4.78,pct:0.33,avg:0.16},
+  528:{name:"Netherlands",flag:"🇳🇱",cont:"Europe",total:4.23,pct:0.29,avg:0.14},
+  562:{name:"Niger",flag:"🇳🇪",cont:"Africa",total:4.89,pct:0.33,avg:0.16},
+  578:{name:"Norway",flag:"🇳🇴",cont:"Europe",total:1.37,pct:0.09,avg:0.046},
+  604:{name:"Peru",flag:"🇵🇪",cont:"South America",total:3.79,pct:0.26,avg:0.13},
+  642:{name:"Romania",flag:"🇷🇴",cont:"Europe",total:5.82,pct:0.40,avg:0.19},
+  646:{name:"Rwanda",flag:"🇷🇼",cont:"Africa",total:2.95,pct:0.20,avg:0.10},
+  682:{name:"Saudi Arabia",flag:"🇸🇦",cont:"Asia",total:2.83,pct:0.19,avg:0.09},
+  686:{name:"Senegal",flag:"🇸🇳",cont:"Africa",total:2.85,pct:0.19,avg:0.10},
+  706:{name:"Somalia",flag:"🇸🇴",cont:"Africa",total:4.26,pct:0.29,avg:0.14},
+  729:{name:"Sudan",flag:"🇸🇩",cont:"Africa",total:6.92,pct:0.47,avg:0.23},
+  752:{name:"Sweden",flag:"🇸🇪",cont:"Europe",total:2.87,pct:0.20,avg:0.10},
+  756:{name:"Switzerland",flag:"🇨🇭",cont:"Europe",total:2.14,pct:0.15,avg:0.07},
+  760:{name:"Syria",flag:"🇸🇾",cont:"Asia",total:2.31,pct:0.16,avg:0.08},
+  788:{name:"Tunisia",flag:"🇹🇳",cont:"Africa",total:2.14,pct:0.15,avg:0.07},
+  858:{name:"Uruguay",flag:"🇺🇾",cont:"South America",total:0.92,pct:0.06,avg:0.03},
+  862:{name:"Venezuela",flag:"🇻🇪",cont:"South America",total:3.51,pct:0.24,avg:0.12},
+  887:{name:"Yemen",flag:"🇾🇪",cont:"Asia",total:4.13,pct:0.28,avg:0.14},
+  894:{name:"Zambia",flag:"🇿🇲",cont:"Africa",total:3.26,pct:0.22,avg:0.11},
+  716:{name:"Zimbabwe",flag:"🇿🇼",cont:"Africa",total:3.11,pct:0.21,avg:0.10},
+  554:{name:"New Zealand",flag:"🇳🇿",cont:"Oceania",total:0.95,pct:0.06,avg:0.03},
+  860:{name:"Uzbekistan",flag:"🇺🇿",cont:"Asia",total:4.01,pct:0.27,avg:0.13},
+  398:{name:"Kazakhstan",flag:"🇰🇿",cont:"Asia",total:3.22,pct:0.22,avg:0.11},
+  116:{name:"Cambodia",flag:"🇰🇭",cont:"Asia",total:2.93,pct:0.20,avg:0.10},
+  178:{name:"Congo",flag:"🇨🇬",cont:"Africa",total:1.55,pct:0.11,avg:0.05},
+  140:{name:"Central African Republic",flag:"🇨🇫",cont:"Africa",total:1.65,pct:0.11,avg:0.06},
+  454:{name:"Malawi",flag:"🇲🇼",cont:"Africa",total:3.01,pct:0.21,avg:0.10},
+  320:{name:"Guatemala",flag:"🇬🇹",cont:"North America",total:1.78,pct:0.12,avg:0.06},
+  208:{name:"Denmark",flag:"🇩🇰",cont:"Europe",total:1.59,pct:0.11,avg:0.05},
+  218:{name:"Ecuador",flag:"🇪🇨",cont:"South America",total:1.73,pct:0.12,avg:0.06},
+};
+
+const CONT_TOTALS = {
+  "Asia":         {total:529.90,pct:36.14},
+  "Europe":       {total:187.78,pct:12.81},
+  "Africa":       {total:105.75,pct:7.21},
+  "North America":{total:73.84,pct:5.04},
+  "South America":{total:40.04,pct:2.73},
+  "Oceania":      {total:4.82,pct:0.33},
+};
+
+const CAUSES_GLOBAL = [
+  {name:"Cardiovascular diseases",avg:14.92,spark:[10.1,11.2,12.0,12.8,13.5,14.0,14.6,15.2,15.8,16.2,16.5,16.8]},
+  {name:"Neoplasms",              avg:7.66, spark:[5.8,6.1,6.4,6.7,7.0,7.2,7.5,7.7,8.0,8.2,8.5,8.7]},
+  {name:"Chronic respiratory",    avg:3.49, spark:[3.1,3.2,3.3,3.45,3.55,3.6,3.6,3.55,3.5,3.45,3.4,3.35]},
+  {name:"Lower resp. infections", avg:2.79, spark:[3.4,3.3,3.2,3.1,3.0,2.9,2.8,2.75,2.7,2.65,2.6,2.55]},
+  {name:"Neonatal disorders",     avg:2.56, spark:[3.8,3.6,3.4,3.2,3.0,2.9,2.75,2.65,2.55,2.45,2.35,2.25]},
+];
+
+const CAUSE_NAMES_BY_COUNTRY = [
+  "Cardiovascular diseases","Neoplasms","Chronic respiratory",
+  "Lower resp. infections","Neonatal disorders","Digestive diseases","Diabetes & kidney",
+];
+
+/* Country cause breakdown (generated) */
+function countryCauses(iso) {
+  const d = CD[iso]; if (!d) return [];
+  const fracs = [0.30,0.18,0.09,0.07,0.06,0.08,0.05];
+  const noise = [0,1,2,3,4,5,6].map(i => 0.85+0.3*Math.sin(iso*0.07+i*1.3));
+  const raw = fracs.map((f,i)=>f*noise[i]);
+  const tot = raw.reduce((a,b)=>a+b,0);
+  return CAUSE_NAMES_BY_COUNTRY.map((name,i)=>({name,val:+(d.avg*raw[i]/tot).toFixed(3)}));
+}
+
+/* Yearly trend 30 points 1990–2019 */
+function trend30(iso) {
+  const d = CD[iso]; if (!d) return Array(30).fill(0);
+  const res = [];
+  for (let i=0;i<30;i++) {
+    const t = i/29; let f;
+    if (d.cont==='Africa')      f = 0.60+0.85*t;
+    else if (d.cont==='Asia' && d.avg>5) f = 0.80+0.45*t+0.04*Math.sin(t*Math.PI*5);
+    else if (d.cont==='Europe') f = 1.10-0.15*t+0.06*Math.sin(t*Math.PI*3);
+    else                         f = 0.78+0.44*t+0.05*Math.sin(t*Math.PI*4);
+    res.push(+(d.avg*f).toFixed(3));
+  }
+  return res;
+}
+
+/* ═══════════════════════════════ STATE ══════════════════════════════════ */
+let selectedConts = new Set();
+let selectedISO = null;
+let worldData = null;
+let pathGenerator, projection, globeSVG, countryPaths, haloEl;
+let rotateTimer, isDragging = false;
+let filterDebounce = null;   // debounce filter updates 200ms
+let hoverThrottle = 0;       // throttle globe hover to 60fps
+
+/* ═══════════════════════════════ HELPERS ════════════════════════════════ */
+function fmtM(v) {
+  if (v >= 1000) return (v/1000).toFixed(2)+'bn';
+  if (v >= 10)   return v.toFixed(2)+'M';
+  return v.toFixed(2)+'M';
+}
+function fmtLong(v) {
+  return (v*1e6).toLocaleString('en-US',{maximumFractionDigits:0});
+}
+function getFilteredData() {
+  const entries = Object.entries(CD);
+  if (selectedConts.size===0) return entries;
+  return entries.filter(([,d])=>selectedConts.has(d.cont));
+}
+
+/* Red gradient color scale for death count */
+const redScale = d3.scaleThreshold()
+  .domain([5, 30])
+  .range(['#F39CBC','#F1527A','#F40000']);
+
+function getColorForDeaths(total) {
+  if (!total || total <= 0) return '#162636';
+  return redScale(total);
+}
+function getCountryColor(iso) {
+  const d = CD[iso];
+  if (!d) return '#0F2030';
+  if (selectedConts.size>0 && !selectedConts.has(d.cont)) return '#0C1A25';
+  return getColorForDeaths(d.total);
+}
+
+/* ═══════════════════════════════ KPI ANIMATION ══════════════════════════
+ * animateKPI — count up from current to endValue over duration ms
+ * Tweak: duration param (default 1600 for main, 1200 for secondary)
+ * Called on load and on every filter change
+ */
+function animateKPI(elSelector, endValue, duration=1600, formatFn) {
+  const el = document.querySelector(elSelector);
+  if (!el) return;
+  const start = parseFloat(el.dataset.current) || 0;
+  const startTime = performance.now();
+  el.dataset.current = endValue;
+  function step(t) {
+    const p = Math.min(1,(t-startTime)/duration);
+    // eased progress using cubic-bezier approximation
+    const eased = p<0.5 ? 4*p*p*p : 1-Math.pow(-2*p+2,3)/2;
+    const cur = start + (endValue-start)*eased;
+    el.textContent = formatFn ? formatFn(cur) : Math.round(cur).toLocaleString();
+    if (p < 1) requestAnimationFrame(step);
+  }
+  requestAnimationFrame(step);
+}
+
+/* Format helpers for KPIs */
+function fmtKpiBn(v)  { return (v/1000).toFixed(2)+'bn'; }
+function fmtKpiM(v)   { return v.toFixed(1)+'M'; }
+
+function updateKPIs() {
+  const data = getFilteredData();
+  const totalM = data.reduce((s,[,d])=>s+d.total,0);
+  const avgM = totalM/30;
+  /* Main KPI: 1600ms (tweak first arg to animateKPI) */
+  animateKPI('#kpi-total', totalM, 1600, v => v>=1000 ? fmtKpiBn(v) : v.toFixed(2)+'M');
+  /* Secondary KPI: 1200ms */
+  animateKPI('#kpi-secondary', avgM, 1200, v => `Yearly Avg. Death | ${v.toFixed(1)}M`);
+}
+
+/* ═══════════════════════════════ TOOLTIP (spec exact) ═══════════════════
+ * showTooltip / hideTooltip — opacity 0→1 with translateY 6px→0 over 160ms
+ * (CSS handles the transition; we just add/remove .show)
+ */
+function showTooltip(html, x, y) {
+  const t = document.getElementById('tooltip');
+  t.innerHTML = html;
+  t.style.left = x+'px';
+  t.style.top  = y+'px';
+  t.classList.add('show');
+}
+function hideTooltip() {
+  document.getElementById('tooltip').classList.remove('show');
+}
+
+/* ═══════════════════════════════ TAB SWITCH ═════════════════════════════
+ * switchTab — fade out current 220ms, fade in new 220ms; underline slide 260ms (CSS)
+ * Tweak: setTimeout delay matches CSS transition duration (220ms)
+ */
+function switchTab(newTabId) {
+  const old = document.querySelector('.tab-content.active');
+  if (old && old.id===newTabId) return;
+  if (old) {
+    old.style.transition = 'opacity 220ms var(--easing-soft)';
+    old.style.opacity = 0;
+    old.classList.remove('active');
+    setTimeout(()=>{ old.style.display='none'; old.style.opacity=''; }, 220);
+  }
+  const next = document.getElementById(newTabId);
+  if (!next) return;
+  next.style.display = 'flex';
+  next.style.flexDirection = 'column';
+  next.style.opacity = 0;
+  requestAnimationFrame(()=>{
+    next.style.transition = 'opacity 220ms var(--easing-soft)';
+    next.style.opacity = 1;
+    next.classList.add('active');
+  });
+  // Tab button active state
+  document.querySelectorAll('#right-tabs .tab').forEach(b=>{
+    const isActive = b.getAttribute('aria-controls')===newTabId;
+    b.classList.toggle('active', isActive);
+    b.setAttribute('aria-selected', isActive);
+  });
+}
+
+/* ═══════════════════════════════ TICKER ════════════════════════════════ */
+function initTicker() {
+  const sorted = Object.entries(CD).sort((a,b)=>b[1].total-a[1].total);
+  const items = sorted.slice(0,30).map(([,d],i)=>
+    `<span class="ti"><span class="ti-n">${i+1}</span><span class="ti-nm">${d.name}</span><span class="ti-v">${fmtLong(d.avg)}</span></span>`
+  ).join('');
+  const el = document.getElementById('ticker');
+  el.innerHTML = items+items;
+}
+
+/* ═══════════════════════════════ LEFT PANEL ════════════════════════════ */
+function renderCheckboxes() {
+  const conts = Object.keys(CONT_TOTALS);
+  const el = document.getElementById('continent-selector');
+  el.innerHTML = conts.map(c=>`
+    <label class="chk-item">
+      <input type="checkbox" value="${c}" onchange="toggleContinent(this)" aria-label="${c}">
+      <span>${c}</span>
+    </label>`).join('');
+}
+
+function renderSummary() {
+  const data = getFilteredData();
+  const totalM = data.reduce((s,[,d])=>s+d.total,0);
+  const avgM = (totalM/30).toFixed(1);
+  const totalStr = totalM>=1000 ? (totalM/1000).toFixed(2)+'bn' : totalM.toFixed(0)+'M';
+  const top5 = [...data].sort((a,b)=>b[1].total-a[1].total).slice(0,5);
+  document.getElementById('summary-box').innerHTML =
+    `Worldwide total deaths is <span class="r">${totalStr}</span> from year <span class="r">1990 to 2019</span>.
+    Yearly Avg deaths is <span class="r">${avgM} million</span>.
+    ${top5[0] ? `<span class="r">${top5[0][1].name}</span> has maximum number of deaths
+    <span class="r">${top5[0][1].total.toFixed(2)} million</span> which is
+    <span class="r">${top5[0][1].pct.toFixed(2)}%</span> of worldwide deaths.`:``}
+    ${top5.slice(1,4).map(([,d])=>`Followed by <span class="r">${d.name} ${d.total.toFixed(2)}million (${d.pct.toFixed(1)}%)</span>`).join(' ')}.`;
+}
+
+/* #bar-continent — D3 horizontal bars, 700ms cubic transitions
+ * Color each bar with linear scale red-min → red-mid → red-max
+ */
+function renderContinentBars() {
+  const data = getFilteredData();
+  const conts = Object.keys(CONT_TOTALS);
+  const contData = conts.map(c=>{
+    const cTotal = data.filter(([,d])=>d.cont===c).reduce((s,[,d])=>s+d.total,0);
+    const totalAll = data.reduce((s,[,d])=>s+d.total,0);
+    const pct = totalAll>0 ? cTotal/totalAll*100 : 0;
+    return {key:c, total:cTotal, pct};
+  }).filter(d=>d.total>0);
+  const maxTotal = Math.max(...contData.map(d=>d.total),1);
+
+  const el = document.getElementById('bar-continent');
+  // Build items; D3 transitions handled via CSS transition on .cb-fill
+  el.innerHTML = contData.map(d=>{
+    const barPct = (d.total/maxTotal*100).toFixed(2);
+    const active = selectedConts.size===0||selectedConts.has(d.key);
+    // Gradient color from redScale
+    const col = d.total>0 ? `background:linear-gradient(90deg,${redScale(d.total*0.3)},${redScale(d.total)})` : '';
+    return `<div class="cb-item" onclick="toggleContinent2('${d.key}')" role="button" tabindex="0" aria-label="${d.key}">
+      <div class="cb-label">${d.key}</div>
+      <div class="cb-track">
+        <div class="cb-fill" style="${col};width:${active?barPct:barPct*0.3}%;opacity:${active?1:.4}">
+          <span class="cb-ft">${d.total.toFixed(2)}M | ${d.pct.toFixed(2)}%</span>
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+/* #bar-top5-countries — vertical column chart, D3 animated 700ms */
+function renderTop5Countries() {
+  const data = getFilteredData().sort((a,b)=>b[1].avg-a[1].avg).slice(0,5);
+  const maxAvg = Math.max(...data.map(([,d])=>d.avg),1);
+  const el = document.getElementById('mini-bars');
+  el.innerHTML = data.map(([,d])=>{
+    const h = Math.max(6,Math.round(d.avg/maxAvg*72));
+    const col = getColorForDeaths(d.total);
+    return `<div class="mb-col">
+      <div class="mb-bar" style="height:${h}px;background:${col};transition:height .7s cubic-bezier(.4,0,.2,1)">
+        <span class="mb-v">${d.avg.toFixed(1)}M</span>
+      </div>
+      <div class="mb-n">${d.name}</div>
+    </div>`;
+  }).join('');
+}
+
+/* #bar-top5-causes — horizontal mini bars in left panel, 700ms cubic */
+function renderTop5Causes() {
+  const maxAvg = CAUSES_GLOBAL[0].avg;
+  const el = document.getElementById('bar-top5-causes');
+  el.innerHTML = CAUSES_GLOBAL.map((c,i)=>{
+    const pct = (c.avg/maxAvg*100).toFixed(2);
+    const col = redScale(c.avg*3);  // scale causes to color range
+    return `<div class="bc-item">
+      <div class="bc-name" title="${c.name}">${c.name}</div>
+      <div class="bc-track">
+        <div class="bc-fill" style="width:${pct}%;background:${col}"></div>
+      </div>
+      <div class="bc-val">${c.avg.toFixed(2)}M</div>
+    </div>`;
+  }).join('');
+}
+
+/* Cause table in center bottom */
+function renderCauseTable() {
+  const tbody = document.getElementById('cause-tbody');
+  tbody.innerHTML = CAUSES_GLOBAL.map(c=>{
+    const sparkBars = c.spark.map(v=>{
+      const h = Math.max(2,Math.round(v/Math.max(...c.spark)*16));
+      return `<div class="spark-b" style="height:${h}px"></div>`;
+    }).join('');
+    return `<tr>
+      <td>${c.name}</td>
+      <td class="c-val">${c.avg.toFixed(2)}M</td>
+      <td><div class="spark">${sparkBars}</div></td>
+    </tr>`;
+  }).join('');
+}
+
+/* ═══════════════════════════════ COUNTRY TABLE ══════════════════════════
+ * #country-table — sorted by death_count descending
+ * Inline flags at --flag-row-size × --flag-row-height (18×12px)
+ * Mini red gradient bar in Deaths cell + percentage
+ */
+function renderCountryTable() {
+  const data = getFilteredData().sort((a,b)=>b[1].total-a[1].total);
+  const maxTotal = data.length>0 ? data[0][1].total : 1;
+  const el = document.getElementById('country-table');
+  el.innerHTML = data.map(([iso,d])=>{
+    const barW = Math.max(2,Math.round(d.total/maxTotal*50));
+    const isSelected = selectedISO===+iso;
+    return `<div class="dc-row${isSelected?' sel':''}"
+        onclick="selectCountry(${iso})"
+        onkeydown="if(event.key==='Enter'||event.key===' ')selectCountry(${iso})"
+        role="listitem" tabindex="0" aria-label="${d.name} ${d.total.toFixed(2)}M deaths ${d.pct.toFixed(2)}%">
+      <div class="dc-flag" aria-hidden="true">${d.flag}</div>
+      <div class="dc-name">${d.name}</div>
+      <div class="dc-right">
+        <div class="dc-bar-w"><div class="dc-bar" style="width:${barW}px"></div></div>
+        <div class="dc-val">${d.total.toFixed(2)}M | ${d.pct.toFixed(2)}%</div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+/* ═══════════════════════════════ FLAG STRIP ═════════════════════════════
+ * #flag-strip — vertical strip, flags 24×16px
+ * Slide in translateX(12px)→0 with 40ms stagger per flag (per spec)
+ * Tweak: change the 40 in the setTimeout(fn, i*40) call below
+ */
+function initFlagStrip() {
+  const data = getFilteredData().sort((a,b)=>b[1].total-a[1].total);
+  const strip = document.getElementById('flag-strip');
+  strip.innerHTML = data.map(([iso,d])=>
+    `<div class="fs-flag" data-iso="${iso}" title="${d.name}"
+      onclick="selectCountry(${iso})" role="button" tabindex="-1" aria-label="${d.name}">${d.flag}</div>`
+  ).join('');
+  // Staggered slide-in animation: 40ms per flag (tweak here)
+  const flags = strip.querySelectorAll('.fs-flag');
+  flags.forEach((f,i)=>{
+    setTimeout(()=>{
+      f.classList.add('animated','visible');
+    }, i*40);
+  });
+}
+
+function updateFlagStripSelection() {
+  document.querySelectorAll('.fs-flag').forEach(f=>{
+    f.classList.toggle('sel', +f.dataset.iso===selectedISO);
+  });
+}
+
+/* ═══════════════════════════════ GLOBE ══════════════════════════════════ */
+function initGlobe() {
+  const wrap = document.getElementById('globe-wrap');
+  const W = wrap.clientWidth, H = wrap.clientHeight;
+  const radius = Math.min(W,H)/2 - 8;
+
+  const svg = d3.select('#globe-svg').attr('width',W).attr('height',H);
+  globeSVG = svg;
+
+  projection = d3.geoOrthographic()
+    .scale(radius).translate([W/2,H/2])
+    .clipAngle(90).rotate([-20,-20]);
+
+  pathGenerator = d3.geoPath().projection(projection);
+
+  // Ocean
+  svg.append('circle').attr('cx',W/2).attr('cy',H/2).attr('r',radius).attr('fill','#04080F');
+
+  // Graticule
+  const grat = d3.geoGraticule().step([20,20]);
+  svg.append('path').datum(grat()).attr('class','graticule')
+    .attr('d',pathGenerator).attr('fill','none').attr('stroke','#0D1D2D').attr('stroke-width',.4);
+
+  d3.json('https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json')
+    .then(world=>{
+      worldData = world;
+      const features = topojson.feature(world,world.objects.countries).features;
+
+      // Country fill paths
+      countryPaths = svg.selectAll('.country').data(features).join('path')
+        .attr('class','country').attr('d',pathGenerator)
+        .attr('stroke','#04080F').attr('stroke-width',.3)
+        .attr('fill', d=>getCountryColor(+d.id))
+        .style('cursor','pointer')
+        .on('mousemove', handleGlobeHover)
+        .on('mouseleave', hideTooltip)
+        .on('click', (e,d)=>selectCountry(+d.id));
+
+      // Hover highlight overlay (separate path layer)
+      haloEl = svg.append('path')
+        .attr('class','country-highlight')
+        .attr('fill','rgba(255,255,255,0.15)')
+        .attr('stroke','rgba(255,255,255,0.5)')
+        .attr('stroke-width',1.5)
+        .attr('pointer-events','none');
+
+      // Sphere outline
+      svg.append('circle').attr('cx',W/2).attr('cy',H/2).attr('r',radius)
+        .attr('fill','none').attr('stroke','#1E3444').attr('stroke-width',1);
+
+      startRotation();
+      setupDrag();
+    })
+    .catch(()=>{
+      svg.append('text').attr('x',W/2).attr('y',H/2)
+        .attr('text-anchor','middle').attr('fill','#7FA0B5').attr('font-size',13)
+        .text('Globe requires internet connection');
+    });
+}
+
+/* Globe hover handler — throttled to 60fps */
+function handleGlobeHover(e, feat) {
+  const now = performance.now();
+  if (now - hoverThrottle < 16) return;  // ~60fps throttle
+  hoverThrottle = now;
+
+  const iso = +feat.id;
+  const d = CD[iso];
+  if (!d) { hideTooltip(); haloEl && haloEl.attr('d',null); return; }
+
+  // Hover highlight overlay — opacity 0→0.85 over 220ms (CSS transition)
+  if (haloEl) {
+    haloEl.datum(feat).attr('d', pathGenerator);
+    haloEl.classed('show', true);
+  }
+
+  const wrap = document.getElementById('globe-wrap');
+  const rect = wrap.getBoundingClientRect();
+  const x = e.clientX-rect.left, y = e.clientY-rect.top;
+  const html = `<div class="tt-nm">${d.name}</div>
+    <div class="tt-row"><span>Total Deaths</span><span>${d.total.toFixed(2)}M</span></div>
+    <div class="tt-row"><span>Yearly Avg.</span><span>${d.avg.toFixed(2)}M/yr</span></div>
+    <div class="tt-row"><span>Share</span><span>${d.pct.toFixed(2)}%</span></div>`;
+  const ttW=180;
+  showTooltip(html,
+    x+ttW+10 > wrap.clientWidth  ? x-ttW-10 : x+12,
+    y+90     > wrap.clientHeight ? y-90     : y+12);
+}
+
+/* getCountryCentroid — returns [lng, lat] for iso */
+function getCountryCentroid(iso) {
+  if (!worldData) return [0,0];
+  const features = topojson.feature(worldData,worldData.objects.countries).features;
+  const feat = features.find(f=>+f.id===+iso);
+  if (!feat) return [0,0];
+  try { return d3.geoCentroid(feat); } catch(e) { return [0,0]; }
+}
+
+/* focusCountry — zoom globe to selected country
+ * Camera animate to centroid over 900ms (tweak duration arg below)
+ * Pulsing halo: scale 1→1.12→1, 600ms loop for 2 cycles (tweak in CSS @keyframes halo-pulse)
+ */
+function focusCountry(iso) {
+  const centroid = getCountryCentroid(iso);
+  if (!centroid || (centroid[0]===0&&centroid[1]===0)) return;
+
+  if (rotateTimer) rotateTimer.stop();
+  isDragging = false;
+
+  const [lng, lat] = centroid;
+  const startRot = projection.rotate();
+  const targetRot = [-lng, -lat];
+
+  // Smooth rotation interpolation over 900ms (tweak duration here)
+  const duration = 900;
+  const startTime = performance.now();
+  function animRotate(t) {
+    const p = Math.min(1,(t-startTime)/duration);
+    const eased = p<0.5 ? 4*p*p*p : 1-Math.pow(-2*p+2,3)/2;
+    const newRot = [
+      startRot[0]+(targetRot[0]-startRot[0])*eased,
+      startRot[1]+(targetRot[1]-startRot[1])*eased,
+    ];
+    projection.rotate(newRot);
+    updateGlobePaths();
+    if (p < 1) requestAnimationFrame(animRotate);
+    else {
+      // Restart rotation after zoom (pause for selection viewing)
+      setTimeout(()=>startRotation(), 3000);
+    }
+  }
+  requestAnimationFrame(animRotate);
+
+  // Pulse halo on selected country
+  if (haloEl && worldData) {
+    const features = topojson.feature(worldData,worldData.objects.countries).features;
+    const feat = features.find(f=>+f.id===+iso);
+    if (feat) {
+      haloEl.datum(feat);
+      // Apply pulse animation via class (600ms loop x2 via CSS)
+      haloEl.classed('show',true).classed('halo-pulse',false);
+      requestAnimationFrame(()=>haloEl.classed('halo-pulse',true));
+    }
+  }
+}
+
+function getCountryColor_animated(iso) {
+  const d = CD[iso];
+  if (!d) return '#0F2030';
+  if (selectedConts.size>0 && !selectedConts.has(d.cont)) return '#0C1A25';
+  if (iso===selectedISO) return '#FFFFFF';
+  return getColorForDeaths(d.total);
+}
+
+function updateGlobeColors() {
+  if (!countryPaths) return;
+  // D3 transition 600ms
+  countryPaths.transition().duration(600).attr('fill',d=>getCountryColor(+d.id));
+}
+
+function startRotation() {
+  if (rotateTimer) rotateTimer.stop();
+  // Continuous rotation at ~0.12 rad/frame equivalent; pause on hover/selection
+  rotateTimer = d3.timer(()=>{
+    if (!isDragging && !selectedISO) {
+      const r = projection.rotate();
+      projection.rotate([r[0]+0.12,r[1]]);
+      updateGlobePaths();
+    }
+  });
+}
+
+function setupDrag() {
+  let lastX, lastY;
+  globeSVG.call(d3.drag()
+    .on('start', e=>{ isDragging=true; lastX=e.x; lastY=e.y; haloEl&&haloEl.classed('show',false); })
+    .on('drag', e=>{
+      const dx=e.x-lastX, dy=e.y-lastY;
+      lastX=e.x; lastY=e.y;
+      const r=projection.rotate();
+      projection.rotate([r[0]+dx*0.3,r[1]-dy*0.3]);
+      updateGlobePaths();
+    })
+    .on('end', ()=>{ isDragging=false; })
+  );
+}
+
+function updateGlobePaths() {
+  if (!pathGenerator) return;
+  globeSVG.selectAll('.country,.graticule').attr('d',pathGenerator);
+  // Update halo overlay position on rotate
+  if (haloEl && haloEl.datum()) haloEl.attr('d',pathGenerator);
+}
+
+/* ═══════════════════════════════ TREND POPUP ════════════════════════════
+ * #country-trend-popup: slide in translateX(20px)→0 and opacity 0→1 over 320ms
+ * Cross-fade: old line fades out 200ms, new line draws in 900ms (easeLinear)
+ * Line draw: stroke-dashoffset animation per spec
+ */
+function showTrendPanel(iso) {
+  const d = CD[iso]; if (!d) return;
+  const tp = document.getElementById('country-trend-popup');
+  document.getElementById('tp-title').textContent = d.flag+' '+d.name;
+  document.getElementById('tp-sub').textContent = 'Yearly deaths 1990–2019 (M)';
+
+  const vals = trend30(iso);
+  const margin = {t:6,r:4,b:18,l:26};
+  const W = 244-margin.l-margin.r, H = 76-margin.t-margin.b;
+  const xScale = d3.scaleLinear().domain([0,29]).range([0,W]);
+  const yScale = d3.scaleLinear().domain([0,d3.max(vals)*1.15]).range([H,0]);
+  const line = d3.line().x((_,i)=>xScale(i)).y(v=>yScale(v)).curve(d3.curveCatmullRom);
+  const area = d3.area().x((_,i)=>xScale(i)).y0(H).y1(v=>yScale(v)).curve(d3.curveCatmullRom);
+
+  const svg = d3.select('#tp-svg');
+
+  // Cross-fade old line out 200ms then draw new line 900ms
+  svg.transition().duration(200).style('opacity',0).on('end',()=>{
+    svg.selectAll('*').remove();
+    const g = svg.append('g').attr('transform',`translate(${margin.l},${margin.t})`);
+
+    g.append('defs').append('linearGradient').attr('id','tpg').attr('x1',0).attr('y1',0).attr('x2',0).attr('y2',1)
+      .call(gr=>{
+        gr.append('stop').attr('offset','0%').attr('stop-color','#BD3978').attr('stop-opacity',.6);
+        gr.append('stop').attr('offset','100%').attr('stop-color','#BD3978').attr('stop-opacity',.02);
+      });
+    g.append('path').datum(vals).attr('d',area).attr('fill','url(#tpg)');
+
+    /* Line draw animation: stroke-dashoffset full→0 over 900ms easeLinear (spec exact) */
+    const path = g.append('path').datum(vals)
+      .attr('d', line)
+      .attr('fill','none')
+      .attr('stroke','#BD3978')
+      .attr('stroke-width',1.5);
+    const totalLength = path.node().getTotalLength();
+    path.attr('stroke-dasharray', totalLength)
+        .attr('stroke-dashoffset', totalLength)
+        .transition().duration(900).ease(d3.easeLinear)
+        .attr('stroke-dashoffset', 0);
+
+    g.append('g').attr('transform',`translate(0,${H})`)
+      .call(d3.axisBottom(xScale).ticks(5).tickFormat(i=>1990+Math.round(i)))
+      .selectAll('text,line,path').attr('stroke','#5B7A8E').attr('fill','#5B7A8E').style('font-size','8px');
+    g.append('g')
+      .call(d3.axisLeft(yScale).ticks(3).tickFormat(v=>v.toFixed(1)))
+      .selectAll('text,line,path').attr('stroke','#5B7A8E').attr('fill','#5B7A8E').style('font-size','8px');
+
+    svg.transition().duration(0).style('opacity',1);
+  });
+
+  // Popup slide-in: translateX(20px)→0 and opacity 0→1 over 320ms
+  tp.classList.add('show');
+  requestAnimationFrame(()=>requestAnimationFrame(()=>tp.classList.add('visible')));
+}
+
+function closeTrend() {
+  const tp = document.getElementById('country-trend-popup');
+  tp.classList.remove('visible');
+  setTimeout(()=>{ tp.classList.remove('show'); }, 320);
+  selectedISO = null;
+  renderCountryTable();
+  updateFlagStripSelection();
+  if (!isDragging) startRotation();
+}
+
+/* ═══════════════════════════════ INTERACTIONS ═══════════════════════════ */
+function toggleContinent(el) {
+  if (el.checked) selectedConts.add(el.value);
+  else selectedConts.delete(el.value);
+  scheduleRefresh();
+}
+
+function toggleContinent2(c) {
+  const chks = document.querySelectorAll('#continent-selector input');
+  chks.forEach(ck=>{
+    if (ck.value===c) {
+      ck.checked = !ck.checked;
+      if (ck.checked) selectedConts.add(c); else selectedConts.delete(c);
+    }
+  });
+  scheduleRefresh();
+}
+
+/* Debounce filter updates 200ms */
+function scheduleRefresh() {
+  clearTimeout(filterDebounce);
+  filterDebounce = setTimeout(refreshAll, 200);
+}
+
+function refreshAll() {
+  renderSummary();
+  renderContinentBars();
+  renderTop5Countries();
+  renderTop5Causes();
+  updateGlobeColors();
+  renderCountryTable();
+  updateKPIs();
+}
+
+function resetFilters() {
+  selectedConts.clear();
+  selectedISO = null;
+  document.querySelectorAll('#continent-selector input').forEach(ck=>ck.checked=false);
+  closeTrend();
+  refreshAll();
+  initFlagStrip();
+}
+
+function selectCountry(iso) {
+  const d = CD[iso]; if (!d) return;
+  selectedISO = iso;
+  renderCountryTable();
+  renderCauseByCountry(iso);
+  updateFlagStripSelection();
+  showTrendPanel(iso);
+  focusCountry(iso);
+  // Switch to cause tab to show breakdown
+  // (keep worldwide tab showing table; cause details in popup)
+}
+
+function renderCauseByCountry(iso) {
+  const d = CD[iso]; if (!d) return;
+  const causes = countryCauses(iso);
+  const maxV = Math.max(...causes.map(c=>c.val),1);
+  document.getElementById('cbt-hdr').innerHTML =
+    `<strong>${d.flag} ${d.name}</strong> — total ${d.total.toFixed(2)}M deaths`;
+  document.getElementById('cbt-country').innerHTML = causes.map(c=>{
+    const bw = Math.max(2,Math.round(c.val/maxV*100));
+    const col = getColorForDeaths(c.val*10);
+    return `<div class="cbt-row">
+      <div class="cbt-name">${c.name}</div>
+      <div class="cbt-val">${c.val.toFixed(2)}M</div>
+      <div class="cbt-bar-w"><div class="cbt-bar" style="width:${bw}%;background:${col}"></div></div>
+    </div>`;
+  }).join('');
+}
+
+/* ═══════════════════════════════ BOOT ═══════════════════════════════════ */
+document.addEventListener('DOMContentLoaded', ()=>{
+  initTicker();
+  renderCheckboxes();
+  renderSummary();
+  renderContinentBars();
+  renderTop5Countries();
+  renderTop5Causes();
+  renderCauseTable();
+  renderCountryTable();
+  initFlagStrip();
+  initGlobe();
+  // Animate KPIs on load
+  setTimeout(updateKPIs, 400);
+  // Ensure worldwide tab shown correctly
+  document.getElementById('worldwide-tab').style.display = 'flex';
+  document.getElementById('worldwide-tab').style.flexDirection = 'column';
+});
+</script>
+</body>
+</html>
